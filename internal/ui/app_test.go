@@ -214,3 +214,39 @@ func TestErasingScreen_TicksWaitForEventBeforeAdvancing(t *testing.T) {
 		t.Fatalf("got FilesShredded=%d, want 2", m.result.FilesShredded)
 	}
 }
+
+// TestErasingScreen_EventsArrivingAheadOfAnimationStillReachDone covers the
+// realistic case where shred.ShredAll (unthrottled) finishes every target,
+// and even sends the final aggregate event, before the fixed-cadence
+// animation has advanced past the first target. All three real events land
+// back-to-back with zero ticks in between. The animation must still pace
+// through every target's dissolve and reach screenDone — no event may be
+// silently dropped just because it arrived while a prior target's
+// completion was still pending consumption by the tick loop.
+func TestErasingScreen_EventsArrivingAheadOfAnimationStillReachDone(t *testing.T) {
+	m := Model{
+		screen:  screenErasing,
+		targets: []string{"/tmp/a", "/tmp/b"},
+	}
+
+	updated, _ := m.Update(eraseEventMsg{Path: "/tmp/a", Result: shred.Result{FilesShredded: 1}})
+	m = updated.(Model)
+	updated, _ = m.Update(eraseEventMsg{Path: "/tmp/b", Result: shred.Result{FilesShredded: 1}})
+	m = updated.(Model)
+	updated, _ = m.Update(eraseEventMsg{Done: true, Result: shred.Result{FilesShredded: 2}})
+	m = updated.(Model)
+
+	const maxTicks = 2*dissolveFrameCount + 5
+	for i := 0; i < maxTicks && m.screen == screenErasing; i++ {
+		updated, _ := m.Update(dissolveTickMsg{})
+		m = updated.(Model)
+	}
+
+	if m.screen != screenDone {
+		t.Fatalf("got screen %v after %d ticks, want screenDone (targetIdx=%d dissolveFrame=%d targetDone=%v)",
+			m.screen, maxTicks, m.targetIdx, m.dissolveFrame, m.targetDone)
+	}
+	if m.result.FilesShredded != 2 {
+		t.Fatalf("got FilesShredded=%d, want 2", m.result.FilesShredded)
+	}
+}

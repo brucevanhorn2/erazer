@@ -50,6 +50,20 @@ type Model struct {
 
 	dissolveFrame int
 	targetDone    bool
+	// pendingDone counts real per-target completions (shred.Event with
+	// Done=false) that have arrived but not yet been consumed by the
+	// animation gate in handleDissolveTick. shred.ShredAll runs
+	// unthrottled while the animation is paced to dissolveInterval, so
+	// events for several targets — even all of them — can arrive before
+	// the first target's animation finishes. Without this counter,
+	// targetDone (a single bool) gets set true by whichever event arrives
+	// next regardless of which target it's for, and a later burst event
+	// can be silently dropped once already true — permanently losing the
+	// completion signal for a subsequent target and hanging the UI short
+	// of screenDone. Counting arrivals instead of latching a bool makes
+	// each tick-driven advance consume exactly one already-arrived
+	// completion, in order, however far ahead of the animation they came.
+	pendingDone int
 
 	result  shred.Result
 	doneErr string
@@ -265,6 +279,7 @@ func (m Model) startErase() (tea.Model, tea.Cmd) {
 	m.targetIdx = 0
 	m.dissolveFrame = 0
 	m.targetDone = false
+	m.pendingDone = 0
 	m.result = shred.Result{}
 	m.eventsCh = make(chan shred.Event, len(m.targets)+1)
 	go shred.ShredAll(m.targets, opts, m.eventsCh)
@@ -298,6 +313,11 @@ func (m Model) handleEraseEvent(msg eraseEventMsg) (tea.Model, tea.Cmd) {
 		m.result = evt.Result
 		return m, nil
 	}
+	// Count the arrival rather than latch a single bool: shred.ShredAll
+	// can finish several (or all) targets before the animation catches up
+	// to even the first one, and a second arrival must not be lost just
+	// because targetDone was already true from the first.
+	m.pendingDone++
 	m.targetDone = true
 	return m, waitForShredEvent(m.eventsCh)
 }
@@ -312,7 +332,8 @@ func (m Model) handleDissolveTick() (tea.Model, tea.Cmd) {
 	if m.dissolveFrame >= dissolveFrameCount && m.targetDone {
 		m.targetIdx++
 		m.dissolveFrame = 0
-		m.targetDone = false
+		m.pendingDone--
+		m.targetDone = m.pendingDone > 0
 		if m.targetIdx >= len(m.targets) {
 			m.screen = screenDone
 			return m, nil
