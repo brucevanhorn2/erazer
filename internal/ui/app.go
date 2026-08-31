@@ -3,6 +3,7 @@ package ui
 import (
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -17,6 +18,7 @@ const (
 	screenBrowsing screen = iota
 	screenAbout
 	screenConfirm
+	screenErasing
 	screenDone
 )
 
@@ -41,7 +43,14 @@ type Model struct {
 	rotational   bool
 	rotationalOK bool
 
-	targets []string
+	targets   []string
+	targetIdx int
+	opts      shred.Options
+	eventsCh  chan shred.Event
+
+	dissolveFrame int
+	targetDone    bool
+
 	result  shred.Result
 	doneErr string
 
@@ -102,6 +111,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case screenDone:
 			return m.handleDoneKey(msg)
 		}
+
+	case eraseEventMsg:
+		return m.handleEraseEvent(msg)
+
+	case dissolveTickMsg:
+		return m.handleDissolveTick()
 	}
 	return m, nil
 }
@@ -230,24 +245,80 @@ func (m Model) parseConfirmSettings() (shred.Options, string) {
 	return shred.Options{Passes: passes, Seed: seed}, ""
 }
 
-// startErase runs the shred synchronously and moves straight to Done. Task
-// 10 replaces this body with an async, animated version — the Confirm ->
-// Done contract (m.result, m.screen) stays the same either way.
+// startErase validates the Confirm screen's settings, then kicks off an
+// async shred of every target: a goroutine runs shred.ShredAll and streams
+// one shred.Event per target (plus a final aggregate event) back over
+// eventsCh, consumed via the same channel-plus-re-arming-Cmd "subscription"
+// pattern exfil/sneakernet use for transfer/backup progress. The Erasing
+// screen's own dissolveTick paces the animation independently; each
+// target only advances once both its animation has run its course AND its
+// real shred.Event has arrived (handleEraseEvent/handleDissolveTick
+// below), so the UI can never show a target as erazed before it actually
+// is.
 func (m Model) startErase() (tea.Model, tea.Cmd) {
 	opts, errMsg := m.parseConfirmSettings()
 	if errMsg != "" {
 		m.confirmErr = errMsg
 		return m, nil
 	}
+	m.opts = opts
+	m.targetIdx = 0
+	m.dissolveFrame = 0
+	m.targetDone = false
 	m.result = shred.Result{}
-	for _, target := range m.targets {
-		res := shred.Shred(target, opts)
-		m.result.FilesShredded += res.FilesShredded
-		m.result.BytesOverwritten += res.BytesOverwritten
-		m.result.Errors = append(m.result.Errors, res.Errors...)
+	m.eventsCh = make(chan shred.Event, len(m.targets)+1)
+	go shred.ShredAll(m.targets, opts, m.eventsCh)
+	m.screen = screenErasing
+	return m, tea.Batch(waitForShredEvent(m.eventsCh), dissolveTick())
+}
+
+// eraseEventMsg wraps shred.Event as a distinct type so Bubble Tea's
+// type-based dispatch in Update routes it correctly.
+type eraseEventMsg shred.Event
+
+func waitForShredEvent(ch chan shred.Event) tea.Cmd {
+	return func() tea.Msg {
+		evt, ok := <-ch
+		if !ok {
+			return eraseEventMsg{Done: true}
+		}
+		return eraseEventMsg(evt)
 	}
-	m.screen = screenDone
-	return m, nil
+}
+
+type dissolveTickMsg struct{}
+
+func dissolveTick() tea.Cmd {
+	return tea.Tick(dissolveInterval, func(time.Time) tea.Msg { return dissolveTickMsg{} })
+}
+
+func (m Model) handleEraseEvent(msg eraseEventMsg) (tea.Model, tea.Cmd) {
+	evt := shred.Event(msg)
+	if evt.Done {
+		m.result = evt.Result
+		return m, nil
+	}
+	m.targetDone = true
+	return m, waitForShredEvent(m.eventsCh)
+}
+
+func (m Model) handleDissolveTick() (tea.Model, tea.Cmd) {
+	if m.screen != screenErasing {
+		return m, nil
+	}
+	if m.dissolveFrame < dissolveFrameCount {
+		m.dissolveFrame++
+	}
+	if m.dissolveFrame >= dissolveFrameCount && m.targetDone {
+		m.targetIdx++
+		m.dissolveFrame = 0
+		m.targetDone = false
+		if m.targetIdx >= len(m.targets) {
+			m.screen = screenDone
+			return m, nil
+		}
+	}
+	return m, dissolveTick()
 }
 
 func (m Model) handleDoneKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {

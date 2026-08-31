@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 )
 
@@ -14,11 +15,30 @@ func (m Model) View() string {
 		return m.about.View(m.theme)
 	case screenConfirm:
 		return m.confirmView()
+	case screenErasing:
+		return m.erasingView()
 	case screenDone:
 		return m.doneView()
 	default:
 		return m.browsingView()
 	}
+}
+
+func (m Model) erasingView() string {
+	var b strings.Builder
+	b.WriteString(m.theme.Header.Render("Erazing...") + "\n\n")
+	for i, t := range m.targets {
+		name := filepath.Base(t)
+		switch {
+		case i < m.targetIdx:
+			b.WriteString(m.theme.StatusError.Render("  [erazed] "+name) + "\n")
+		case i == m.targetIdx:
+			b.WriteString("  " + gradientText(dissolveText(name, m.dissolveFrame, dissolveFrameCount), m.theme.PrimaryColor, m.theme.SecondaryColor) + "\n")
+		default:
+			b.WriteString("  " + m.theme.BrowserFile.Render(name) + "\n")
+		}
+	}
+	return b.String()
 }
 
 func (m Model) browsingView() string {

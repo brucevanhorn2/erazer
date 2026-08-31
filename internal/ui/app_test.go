@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/brucevanhorn2/erazer/internal/shred"
 )
 
 func TestModel_StartsOnBrowsingScreen(t *testing.T) {
@@ -128,7 +130,7 @@ func TestConfirmScreen_InvalidPassesShowsErrorAndDoesNotErase(t *testing.T) {
 	}
 }
 
-func TestConfirmScreen_TriggerErasesSelectedFileAndReachesDone(t *testing.T) {
+func TestConfirmScreen_TriggerStartsErasingScreen(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "a.txt")
 	if err := os.WriteFile(path, []byte("secret"), 0644); err != nil {
@@ -143,13 +145,72 @@ func TestConfirmScreen_TriggerErasesSelectedFileAndReachesDone(t *testing.T) {
 	updated, _ = m.handleConfirmKey(tea.KeyMsg{Type: tea.KeyEnter})
 	got := updated.(Model)
 
-	if got.screen != screenDone {
-		t.Fatalf("got screen %v, want screenDone", got.screen)
+	if got.screen != screenErasing {
+		t.Fatalf("got screen %v, want screenErasing", got.screen)
 	}
-	if got.result.FilesShredded != 1 {
-		t.Fatalf("got FilesShredded=%d, want 1", got.result.FilesShredded)
+	if len(got.targets) != 1 || got.targets[0] != path {
+		t.Fatalf("got targets %v, want [%s]", got.targets, path)
+	}
+	if got.eventsCh == nil {
+		t.Fatal("expected eventsCh to be set")
+	}
+
+	// Drain the real shred so the temp dir cleans up without a race.
+	for range got.eventsCh {
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Fatalf("expected file to be gone, got err=%v", err)
+		t.Fatalf("expected file to eventually be gone, got err=%v", err)
+	}
+}
+
+func TestErasingScreen_TicksWaitForEventBeforeAdvancing(t *testing.T) {
+	m := Model{
+		screen:  screenErasing,
+		targets: []string{"/tmp/a", "/tmp/b"},
+	}
+
+	for i := 0; i < dissolveFrameCount+3; i++ {
+		updated, _ := m.Update(dissolveTickMsg{})
+		m = updated.(Model)
+	}
+	if m.dissolveFrame != dissolveFrameCount {
+		t.Fatalf("got dissolveFrame %d, want it capped at %d", m.dissolveFrame, dissolveFrameCount)
+	}
+	if m.targetIdx != 0 {
+		t.Fatal("expected targetIdx to hold at 0 until the real event for target 0 arrives")
+	}
+
+	updated, _ := m.Update(eraseEventMsg{Path: "/tmp/a", Result: shred.Result{FilesShredded: 1}})
+	m = updated.(Model)
+	if !m.targetDone {
+		t.Fatal("expected targetDone once the event for the current target arrives")
+	}
+
+	updated, _ = m.Update(dissolveTickMsg{})
+	m = updated.(Model)
+	if m.targetIdx != 1 {
+		t.Fatalf("got targetIdx %d, want 1", m.targetIdx)
+	}
+	if m.dissolveFrame != 0 {
+		t.Fatalf("got dissolveFrame %d, want reset to 0 for the new target", m.dissolveFrame)
+	}
+	if m.targetDone {
+		t.Fatal("expected targetDone to reset for the new target")
+	}
+
+	updated, _ = m.Update(eraseEventMsg{Path: "/tmp/b", Result: shred.Result{FilesShredded: 1}})
+	m = updated.(Model)
+	for i := 0; i < dissolveFrameCount+1; i++ {
+		updated, _ = m.Update(dissolveTickMsg{})
+		m = updated.(Model)
+	}
+	if m.screen != screenDone {
+		t.Fatalf("got screen %v, want screenDone after the last target finishes", m.screen)
+	}
+
+	updated, _ = m.Update(eraseEventMsg{Done: true, Result: shred.Result{FilesShredded: 2}})
+	m = updated.(Model)
+	if m.result.FilesShredded != 2 {
+		t.Fatalf("got FilesShredded=%d, want 2", m.result.FilesShredded)
 	}
 }
