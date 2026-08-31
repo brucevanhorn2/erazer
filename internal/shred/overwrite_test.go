@@ -91,3 +91,26 @@ func TestShredFile_RemovesOriginalPath(t *testing.T) {
 		t.Fatalf("expected original path to no longer exist, got err=%v", err)
 	}
 }
+
+func TestShredFile_RefusesToFollowSymlink(t *testing.T) {
+	dir := t.TempDir()
+	real := filepath.Join(dir, "real.txt")
+	if err := os.WriteFile(real, []byte("keep me"), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	link := filepath.Join(dir, "link.txt")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	if _, err := shredFile(link, 1, mrand.New(mrand.NewSource(1))); err == nil {
+		t.Fatal("expected shredFile to refuse to open a symlink")
+	}
+	got, err := os.ReadFile(real)
+	if err != nil {
+		t.Fatalf("expected the symlink's target to be untouched, got err=%v", err)
+	}
+	if string(got) != "keep me" {
+		t.Fatalf("symlink target was modified: got %q", got)
+	}
+}

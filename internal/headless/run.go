@@ -60,7 +60,11 @@ func Run(args RunArgs) int {
 			final = ev.Result
 			continue
 		}
-		fmt.Fprintf(args.Stdout, "erazed: %s\n", ev.Path)
+		if len(ev.Result.Errors) == 0 {
+			fmt.Fprintf(args.Stdout, "erazed: %s\n", ev.Path)
+		} else {
+			fmt.Fprintf(args.Stdout, "failed: %s\n", ev.Path)
+		}
 	}
 
 	fmt.Fprintf(args.Stdout, "%d file(s) shredded, %d bytes overwritten\n", final.FilesShredded, final.BytesOverwritten)

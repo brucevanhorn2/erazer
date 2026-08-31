@@ -215,6 +215,92 @@ func TestErasingScreen_TicksWaitForEventBeforeAdvancing(t *testing.T) {
 	}
 }
 
+func TestConfirmScreen_TriggerHonorsPerFileDeselectionInsideSelectedFolder(t *testing.T) {
+	dir := t.TempDir()
+	sub := filepath.Join(dir, "leak")
+	if err := os.MkdirAll(sub, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	keep := filepath.Join(sub, "keep.txt")
+	gone := filepath.Join(sub, "gone.txt")
+	if err := os.WriteFile(keep, []byte("keep"), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := os.WriteFile(gone, []byte("gone"), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	m := NewModel(dir)
+	m.browser.Cursor = 0 // "leak" is the only entry
+	m.browser.ToggleSelect()
+	if err := m.browser.Enter(); err != nil {
+		t.Fatalf("Enter: %v", err)
+	}
+	for i, e := range m.browser.Entries {
+		if e.Name == "keep.txt" {
+			m.browser.Cursor = i
+		}
+	}
+	m.browser.ToggleSelect() // carve out an exception for keep.txt
+
+	updated, _ := m.handleBrowsingKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
+	m = updated.(Model)
+	m.confirmFocus = 2
+
+	updated, _ = m.handleConfirmKey(tea.KeyMsg{Type: tea.KeyEnter})
+	got := updated.(Model)
+
+	for range got.eventsCh {
+	}
+	if _, err := os.Stat(keep); err != nil {
+		t.Fatalf("expected keep.txt to survive the erase, got err=%v", err)
+	}
+	if _, err := os.Stat(gone); !os.IsNotExist(err) {
+		t.Fatalf("expected gone.txt to be shredded, got err=%v", err)
+	}
+}
+
+func TestErasingScreen_FailedTargetIsTrackedNotErazed(t *testing.T) {
+	m := Model{
+		screen:  screenErasing,
+		targets: []string{"/tmp/a"},
+		failed:  make([]bool, 1),
+	}
+	updated, _ := m.Update(eraseEventMsg{
+		Path:   "/tmp/a",
+		Result: shred.Result{Errors: []shred.FileError{{Path: "/tmp/a", Err: os.ErrPermission}}},
+	})
+	m = updated.(Model)
+	if !m.failed[0] {
+		t.Fatal("expected failed[0] to be true after an event carrying errors")
+	}
+}
+
+func TestHandleBrowsingKey_EnterErrorStaysOnBrowsingWithStatusErr(t *testing.T) {
+	dir := t.TempDir()
+	locked := filepath.Join(dir, "locked")
+	if err := os.Mkdir(locked, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.Chmod(locked, 0000); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { os.Chmod(locked, 0755) })
+
+	m := NewModel(dir)
+	m.browser.Cursor = 0 // "locked" is the only entry
+
+	updated, _ := m.handleBrowsingKey(tea.KeyMsg{Type: tea.KeyEnter})
+	got := updated.(Model)
+
+	if got.screen != screenBrowsing {
+		t.Fatalf("got screen %v, want screenBrowsing (a nav error must not dead-end the session)", got.screen)
+	}
+	if got.statusErr == "" {
+		t.Fatal("expected statusErr to be set")
+	}
+}
+
 // TestErasingScreen_EventsArrivingAheadOfAnimationStillReachDone covers the
 // realistic case where shred.ShredAll (unthrottled) finishes every target,
 // and even sends the final aggregate event, before the fixed-cadence

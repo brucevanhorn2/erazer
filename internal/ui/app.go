@@ -43,6 +43,12 @@ type Model struct {
 	rotational   bool
 	rotationalOK bool
 
+	// statusErr holds the error message from the most recent failed
+	// browsing-screen navigation (Enter/Back), shown inline on the
+	// Browsing screen. It does not end the session — BrowserPane rolls
+	// Cwd back on failure, so there's no state corruption to escalate to.
+	statusErr string
+
 	targets   []string
 	targetIdx int
 	opts      shred.Options
@@ -50,6 +56,14 @@ type Model struct {
 
 	dissolveFrame int
 	targetDone    bool
+	// failed[i] is true once the real shred.Event for targets[i] has
+	// arrived and reported at least one error. Indexed by eventsReceived
+	// at the time each event arrives (events arrive in target order — see
+	// ShredAll), independent of how far the tick-driven animation has
+	// gotten. Read by erasingView to distinguish a genuinely erased target
+	// from one that failed and still exists.
+	failed         []bool
+	eventsReceived int
 	// pendingDone counts real per-target completions (shred.Event with
 	// Done=false) that have arrived but not yet been consumed by the
 	// animation gate in handleDissolveTick. shred.ShredAll runs
@@ -146,13 +160,15 @@ func (m Model) handleBrowsingKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.browser.Down()
 	case "enter", "l", "right":
 		if err := m.browser.Enter(); err != nil {
-			m.doneErr = err.Error()
-			m.screen = screenDone
+			m.statusErr = err.Error()
+		} else {
+			m.statusErr = ""
 		}
 	case "backspace", "h", "left":
 		if err := m.browser.Back(); err != nil {
-			m.doneErr = err.Error()
-			m.screen = screenDone
+			m.statusErr = err.Error()
+		} else {
+			m.statusErr = ""
 		}
 	case " ":
 		m.browser.ToggleSelect()
@@ -276,13 +292,16 @@ func (m Model) startErase() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.opts = opts
+	m.opts.Skip = func(path string) bool { return !m.selection.Effective(path) }
 	m.targetIdx = 0
 	m.dissolveFrame = 0
 	m.targetDone = false
 	m.pendingDone = 0
+	m.failed = make([]bool, len(m.targets))
+	m.eventsReceived = 0
 	m.result = shred.Result{}
 	m.eventsCh = make(chan shred.Event, len(m.targets)+1)
-	go shred.ShredAll(m.targets, opts, m.eventsCh)
+	go shred.ShredAll(m.targets, m.opts, m.eventsCh)
 	m.screen = screenErasing
 	return m, tea.Batch(waitForShredEvent(m.eventsCh), dissolveTick())
 }
@@ -317,6 +336,10 @@ func (m Model) handleEraseEvent(msg eraseEventMsg) (tea.Model, tea.Cmd) {
 	// can finish several (or all) targets before the animation catches up
 	// to even the first one, and a second arrival must not be lost just
 	// because targetDone was already true from the first.
+	if m.eventsReceived < len(m.failed) {
+		m.failed[m.eventsReceived] = len(evt.Result.Errors) > 0
+	}
+	m.eventsReceived++
 	m.pendingDone++
 	m.targetDone = true
 	return m, waitForShredEvent(m.eventsCh)

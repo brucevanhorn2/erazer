@@ -7,6 +7,7 @@ import (
 	mrand "math/rand"
 	"os"
 	"path/filepath"
+	"syscall"
 )
 
 // randomSource returns a stream of random bytes for overwrite passes. A
@@ -46,27 +47,33 @@ func overwritePasses(f *os.File, size int64, passes int, src io.Reader) (int64, 
 // random data, then truncates it to zero length, renames it to a random
 // garbage name in the same directory, and removes it — scrubbing both
 // content and filename. It returns the total number of bytes written
-// across all passes.
+// across all passes. The file is opened once, with O_NOFOLLOW: if path has
+// been replaced by a symlink since the caller's type check (shredPath's
+// os.Lstat), the open fails instead of silently overwriting the link's
+// target.
 func shredFile(path string, passes int, src io.Reader) (int64, error) {
-	info, err := os.Stat(path)
+	f, err := os.OpenFile(path, os.O_WRONLY|syscall.O_NOFOLLOW, 0)
 	if err != nil {
 		return 0, err
 	}
 
-	f, err := os.OpenFile(path, os.O_WRONLY, 0)
+	info, err := f.Stat()
 	if err != nil {
+		f.Close()
 		return 0, err
 	}
+
 	written, err := overwritePasses(f, info.Size(), passes, src)
 	if err != nil {
 		f.Close()
 		return written, err
 	}
-	if err := f.Close(); err != nil {
+
+	if err := f.Truncate(0); err != nil {
+		f.Close()
 		return written, err
 	}
-
-	if err := os.Truncate(path, 0); err != nil {
+	if err := f.Close(); err != nil {
 		return written, err
 	}
 

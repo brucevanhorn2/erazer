@@ -91,4 +91,10 @@ func TestRun_ShredFailure_ReturnsError(t *testing.T) {
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("expected the unshreddable file to survive, got err=%v", err)
 	}
+	if strings.Contains(stdout.String(), "erazed: "+path) {
+		t.Fatalf("stdout claims the unshreddable file was erazed: %s", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "failed: "+path) {
+		t.Fatalf("expected stdout to report the failure, got %q", stdout.String())
+	}
 }

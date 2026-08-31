@@ -86,6 +86,32 @@ func TestShred_AlreadyGonePathIsSuccess(t *testing.T) {
 	}
 }
 
+func TestShred_SkipFunctionPreservesExcludedDescendant(t *testing.T) {
+	dir := t.TempDir()
+	keep := filepath.Join(dir, "keep.txt")
+	gone := filepath.Join(dir, "gone.txt")
+	if err := os.WriteFile(keep, []byte("keep me"), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := os.WriteFile(gone, []byte("erase me"), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	res := Shred(dir, Options{Passes: 1, Skip: func(p string) bool { return p == keep }})
+	if len(res.Errors) != 0 {
+		t.Fatalf("unexpected errors: %v", res.Errors)
+	}
+	if _, err := os.Stat(keep); err != nil {
+		t.Fatalf("expected kept file to survive, got err=%v", err)
+	}
+	if _, err := os.Stat(gone); !os.IsNotExist(err) {
+		t.Fatalf("expected other file to be gone, got err=%v", err)
+	}
+	if _, err := os.Stat(dir); err != nil {
+		t.Fatalf("expected the directory itself to survive since it still has a kept child, got err=%v", err)
+	}
+}
+
 func TestShred_DefaultsPassesWhenNotPositive(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "f.txt")

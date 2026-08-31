@@ -31,7 +31,11 @@ func (m Model) erasingView() string {
 		name := filepath.Base(t)
 		switch {
 		case i < m.targetIdx:
-			b.WriteString(m.theme.StatusError.Render("  [erazed] "+name) + "\n")
+			if i < len(m.failed) && m.failed[i] {
+				b.WriteString(m.theme.StatusError.Render("  [failed] "+name) + "\n")
+			} else {
+				b.WriteString(m.theme.StatusKey.Render("  [erazed] "+name) + "\n")
+			}
 		case i == m.targetIdx:
 			b.WriteString("  " + gradientText(dissolveText(name, m.dissolveFrame, dissolveFrameCount), m.theme.PrimaryColor, m.theme.SecondaryColor) + "\n")
 		default:
@@ -45,7 +49,11 @@ func (m Model) browsingView() string {
 	hint := m.theme.StatusBar.Render(
 		"↑/↓ move  enter open  space select  e erase selected  ? about  q quit",
 	)
-	return m.browser.View(m.theme) + "\n" + hint
+	view := m.browser.View(m.theme) + "\n" + hint
+	if m.statusErr != "" {
+		view += "\n" + m.theme.StatusError.Render(m.statusErr)
+	}
+	return view
 }
 
 func (m Model) confirmView() string {
