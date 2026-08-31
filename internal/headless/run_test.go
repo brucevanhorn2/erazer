@@ -67,3 +67,28 @@ func TestRun_MissingPath_ReturnsError(t *testing.T) {
 		t.Fatal("expected an error message on stderr")
 	}
 }
+
+func TestRun_ShredFailure_ReturnsError(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "readonly.txt")
+	if err := os.WriteFile(path, []byte("data"), 0444); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	t.Cleanup(func() { os.Chmod(path, 0644) })
+
+	var stdout, stderr bytes.Buffer
+	code := Run(RunArgs{
+		Path: path, Passes: 1, AssumeYes: true,
+		Stdin: strings.NewReader(""), Stdout: &stdout, Stderr: &stderr,
+	})
+
+	if code != 1 {
+		t.Fatalf("got exit code %d, want 1; stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	if stderr.String() == "" {
+		t.Fatal("expected the shred error to be reported on stderr")
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("expected the unshreddable file to survive, got err=%v", err)
+	}
+}
