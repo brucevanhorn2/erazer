@@ -65,20 +65,29 @@ func Shred(path string, opts Options) Result {
 	return res
 }
 
-func shredPath(path string, info os.FileInfo, passes int, src io.Reader, res *Result, skip func(string) bool) {
+// shredPath destroys path and reports whether path still exists on disk
+// afterward — true for a skipped/failed leaf, or for a directory that
+// still holds a surviving descendant (even a nested one it never skipped
+// itself). The caller uses this to tell removeIfExists whether a
+// subsequent ENOTEMPTY is an expected, already-accounted-for outcome or a
+// genuine surprise (e.g. an unrelated process writing into the directory
+// mid-run) that should be reported as an error.
+func shredPath(path string, info os.FileInfo, passes int, src io.Reader, res *Result, skip func(string) bool) bool {
 	switch {
 	case info.Mode()&os.ModeSymlink != 0:
-		removeIfExists(path, res)
+		return !removeIfExists(path, res, false)
 
 	case info.IsDir():
 		entries, err := os.ReadDir(path)
 		if err != nil {
 			res.Errors = append(res.Errors, FileError{Path: path, Err: err})
-			return
+			return true
 		}
+		survivorRemains := false
 		for _, e := range entries {
 			childPath := filepath.Join(path, e.Name())
 			if skip != nil && skip(childPath) {
+				survivorRemains = true
 				continue
 			}
 			childInfo, err := os.Lstat(childPath)
@@ -87,33 +96,44 @@ func shredPath(path string, info os.FileInfo, passes int, src io.Reader, res *Re
 					continue
 				}
 				res.Errors = append(res.Errors, FileError{Path: childPath, Err: err})
+				survivorRemains = true
 				continue
 			}
-			shredPath(childPath, childInfo, passes, src, res, skip)
+			if shredPath(childPath, childInfo, passes, src, res, skip) {
+				survivorRemains = true
+			}
 		}
-		removeIfExists(path, res)
+		return !removeIfExists(path, res, survivorRemains)
 
 	case info.Mode().IsRegular():
 		n, err := shredFile(path, passes, src)
 		if err != nil {
 			res.Errors = append(res.Errors, FileError{Path: path, Err: err})
-			return
+			return true
 		}
 		res.FilesShredded++
 		res.BytesOverwritten += n
+		return false
 
 	default:
-		removeIfExists(path, res)
+		return !removeIfExists(path, res, false)
 	}
 }
 
-func removeIfExists(path string, res *Result) {
+// removeIfExists removes path and reports whether it succeeded (including
+// the already-gone case, which counts as success). expectNonEmpty tells it
+// whether an ENOTEMPTY failure is an already-accounted-for outcome (an
+// intentionally skipped child, or a nested survivor reported up from
+// shredPath) rather than a surprise — only in the former case is it
+// swallowed instead of reported as a FileError.
+func removeIfExists(path string, res *Result, expectNonEmpty bool) bool {
 	err := os.Remove(path)
 	if err == nil || os.IsNotExist(err) {
-		return
+		return true
 	}
-	if errors.Is(err, syscall.ENOTEMPTY) {
-		return
+	if expectNonEmpty && errors.Is(err, syscall.ENOTEMPTY) {
+		return false
 	}
 	res.Errors = append(res.Errors, FileError{Path: path, Err: err})
+	return false
 }

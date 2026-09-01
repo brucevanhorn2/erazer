@@ -292,7 +292,12 @@ func (m Model) startErase() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.opts = opts
-	m.opts.Skip = func(path string) bool { return !m.selection.Effective(path) }
+	// Capture only the *browse.Set pointer, not the whole Model — the
+	// closure below is retained by the shred goroutine (via m.opts.Skip)
+	// for the life of the run, and closing over m directly would keep the
+	// BrowserPane's listing and both textinputs alive for no reason.
+	sel := m.selection
+	m.opts.Skip = func(path string) bool { return !sel.Effective(path) }
 	m.targetIdx = 0
 	m.dissolveFrame = 0
 	m.targetDone = false
