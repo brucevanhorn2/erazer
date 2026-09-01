@@ -1,0 +1,4 @@
+/erazer
+*.test
+*.out
+/.superpowers/
